@@ -4,12 +4,12 @@ A Kubernetes operator for [VS Code agent hosts](https://code.visualstudio.com/do
 
 - **Workspaces**: an `AgentWorkspace` is a git repository the operator clones onto every host of the `AgentHostSet`s it selects, even when pods are scaled or recreated later. A `hostSetSelector` controls the placement.
 - **Readiness**: pods (optionally) declare the readiness gate `agenthost.derfred.com/content-ready` and become Ready only once their workspaces are in place.
-- **Automations**: an `AgentAutomation` is a prompt the host runs on a schedule in a workspace. The host runs it, in its own automation catalogue; the operator decides which hosts hold it and keeps the definition in line with the manifest.
+- **Automations**: an `AgentAutomation` is a prompt the host runs on a schedule in a workspace. The host runs it, from its own automation catalogue. The operator decides which hosts hold it, keeps the definition in line with the manifest, and turns on the host's automations setting, which is off on a new host.
 - **Status**: each `AgentHostSet` lists its hosts with the address to connect to, the protocol version they agreed, and the agents they offer. Broken git URLs and unreachable hosts show up as `Error`.
 
 The pods are managed by a StatefulSet you write, not the operator, and people reach them over Tailscale. Design and trade-offs: [docs/design.md](docs/design.md).
 
-> **Status: v0.1.0, before the spike.** The code follows AHP 1.1 and is tested against a fake host; it hasn't run against a real `code agent host` yet. [docs/design.md, Spike](docs/design.md#spike) lists what to confirm first.
+> **Status: v0.1.0.** Tested end to end against real `code agent host` servers (VS Code 1.148.0, AHP 1.1); not yet with people on real devices. [docs/testing.md](docs/testing.md) has the plan, how to run each stage, and the results.
 
 ## Install
 
@@ -83,4 +83,9 @@ npm ci
 npm test               # node --test, against a fake agent host and a fake Kubernetes client
 npm run typecheck
 npm run render         # deploy/install.yaml from deploy/jsonnet (needs jsonnet)
+npm run probe -- --token-file token     # a real agent host against what the operator assumes
+npm run e2e            # the operator, a fake API server and two real hosts, in Docker
+examples/quickstart/quickstart.sh       # all of it in kind
 ```
+
+[docs/testing.md](docs/testing.md) explains each.

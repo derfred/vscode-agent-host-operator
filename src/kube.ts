@@ -6,7 +6,9 @@
 
 import { readFileSync } from 'node:fs';
 
-const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
+// Where a pod has its service-account token. KUBE_SERVICE_ACCOUNT_DIR moves
+// it, for running the operator outside a cluster (the end-to-end test).
+const SA_DIR = process.env.KUBE_SERVICE_ACCOUNT_DIR || '/var/run/secrets/kubernetes.io/serviceaccount';
 export const GROUP = 'agenthost.derfred.com';
 export const VERSION = 'v1alpha1';
 // The pod readiness gate the agent host pods declare (see README.md).

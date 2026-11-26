@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "deploy/*.ts"]
+  "include": ["e2e", "scripts", "src", "test", "deploy/*.ts"]
 }

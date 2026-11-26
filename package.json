@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --test test/*.test.ts",
+    "probe": "node scripts/probe.ts",
+    "e2e": "node e2e/run.ts",
     "render": "node deploy/render.ts",
     "typecheck": "tsc -p tsconfig.json"
   },

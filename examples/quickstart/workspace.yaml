@@ -1,0 +1,26 @@
+# What the operator puts on the hosts: a workspace, cloned onto every host
+# of the set, and an automation in it, on the first host. quickstart.sh
+# fills in ${REPOSITORY}.
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentWorkspace
+metadata:
+  name: quickstart
+  namespace: agents
+spec:
+  repository: ${REPOSITORY}
+  hostSetSelector:
+    matchLabels: { owner: quickstart }
+---
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentAutomation
+metadata:
+  name: morning-summary
+  namespace: agents
+spec:
+  workspace: quickstart
+  prompt: Summarise yesterday's commits in this repository in five bullet points.
+  # Off until an agent is signed in on the host; turn on with
+  #   kubectl -n agents patch agentautomation morning-summary --type=merge -p '{"spec":{"enabled":true}}'
+  enabled: false
+  trigger: { schedule: "0 8 * * 1-5", timeZone: Europe/Berlin }
+  agent: { provider: claude }

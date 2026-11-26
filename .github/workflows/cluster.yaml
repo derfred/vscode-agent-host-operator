@@ -1,0 +1,110 @@
+name: cluster
+
+# Stage 3 of docs/testing.md: what the fake API server can't show, in kind.
+# Runs examples/quickstart/quickstart.sh as a user would (the host image, the
+# operator built from this commit, install.yaml applied to a real API
+# server), then:
+#
+#   - the workspace is cloned onto the pod, over a real pods/exec, with the
+#     Role install.yaml grants
+#   - a recreated pod keeps its volume: Ready again without a new clone
+#   - a second replica is Ready only once its clone is there
+#   - deletionPolicy Delete removes the folder from every host
+#   - re-running the quickstart is safe
+
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - "deploy/**"
+      - "src/**"
+      - "Dockerfile"
+      - ".github/workflows/cluster.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    env:
+      CTX: kind-agent-host-quickstart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          sudo install kind /usr/local/bin/kind && rm kind
+          kind version
+
+      - name: examples/quickstart/quickstart.sh
+        run: examples/quickstart/quickstart.sh --operator-from-source --no-forward
+
+      - name: The workspace is on the pod; the set and the automation are Ready
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$CTX" -n agents "$@"; }
+          k exec agents-quickstart-0 -c agent-host -- git -C /workspace/quickstart log -1 --oneline
+          k wait --for=jsonpath='{.status.phase}'=Ready agenthostset/quickstart --timeout=120s
+          k get agenthostset quickstart -o jsonpath='{range .status.hosts[*]}{.pod}: {.serverInfo}, AHP {.protocolVersion}, agents {.agents}{"\n"}{end}'
+          k wait --for=jsonpath='{.status.phase}'=Ready agentautomation/morning-summary --timeout=120s
+          k get agentautomation morning-summary -o jsonpath='{.status.hosts}{"\n"}'
+
+      - name: A recreated pod keeps its checkout
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$CTX" -n agents "$@"; }
+          k exec agents-quickstart-0 -c agent-host -- sh -c 'echo kept > /workspace/quickstart/.e2e-marker'
+          k delete pod agents-quickstart-0 --wait=true
+          k wait --for=condition=Ready pod/agents-quickstart-0 --timeout=300s
+          k exec agents-quickstart-0 -c agent-host -- cat /workspace/quickstart/.e2e-marker
+          k wait --for=jsonpath='{.status.phase}'=Ready agentworkspace/quickstart --timeout=120s
+          # The automation is still in the host's catalogue, not created again.
+          k wait --for=jsonpath='{.status.phase}'=Ready agentautomation/morning-summary --timeout=120s
+
+      - name: A second replica is Ready only with its checkout
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$CTX" -n agents "$@"; }
+          k scale statefulset agents-quickstart --replicas 2
+          # Not Ready before the gate opens; once Ready, the clone is there.
+          k wait --for=condition=Ready pod/agents-quickstart-1 --timeout=600s
+          k exec agents-quickstart-1 -c agent-host -- git -C /workspace/quickstart log -1 --oneline
+          gate=$(k get pod agents-quickstart-1 -o jsonpath='{.status.conditions[?(@.type=="agenthost.derfred.com/content-ready")].status}')
+          echo "content-ready: $gate"; [ "$gate" = True ]
+          k wait --for=jsonpath='{.status.phase}'=Ready agentworkspace/quickstart --timeout=120s
+          k get agentworkspace quickstart -o jsonpath='{range .status.hosts[*]}{.pod}: {.phase}{"\n"}{end}'
+
+      - name: deletionPolicy Delete removes the folder from every host
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$CTX" -n agents "$@"; }
+          k apply -f - <<'EOF'
+          apiVersion: agenthost.derfred.com/v1alpha1
+          kind: AgentWorkspace
+          metadata: { name: scratch, namespace: agents }
+          spec:
+            repository: https://github.com/derfred/vscode-agent-host-operator.git
+            deletionPolicy: Delete
+            hostSetSelector: { matchLabels: { owner: quickstart } }
+          EOF
+          k wait --for=jsonpath='{.status.phase}'=Ready agentworkspace/scratch --timeout=300s
+          k delete agentworkspace scratch --timeout=120s
+          for p in agents-quickstart-0 agents-quickstart-1; do
+            if k exec "$p" -c agent-host -- test -e /workspace/scratch; then echo "::error::/workspace/scratch still on $p"; exit 1; fi
+          done
+
+      - name: Re-running is safe
+        run: examples/quickstart/quickstart.sh --operator-from-source --no-forward
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          k() { kubectl --context "$CTX" -n agents "$@"; }
+          k get all,agenthostsets,agentworkspaces,agentautomations -o wide || true
+          k get agenthostsets,agentworkspaces,agentautomations -o yaml || true
+          k describe pod -l app=agents-quickstart || true
+          k logs deploy/agent-host-operator --tail 150 || true
+          k logs agents-quickstart-0 --tail 80 || true
