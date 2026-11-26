@@ -117,7 +117,7 @@ local crd(kind, spec, columns) = {
     'AgentAutomation',
     {
       description: 'A prompt the host runs on a schedule, in a workspace: an automation in the host’s own catalogue (ahp-automations://). The host runs it; the operator decides which hosts hold it.',
-      required: ['workspace', 'prompt'],
+      required: ['workspace', 'prompt', 'agent'],
       properties: {
         workspace: string('An AgentWorkspace: the working directory of each run, and the hosts it may go to (those holding the workspace).'),
         prompt: string('The message each run starts with.'),
@@ -134,8 +134,9 @@ local crd(kind, spec, columns) = {
         },
         agent: {
           type: 'object',
+          required: ['provider'],
           properties: {
-            provider: string('The agent, as the host names it (claude, copilot, codex; see the AgentHostSet’s status). Default: the host’s default.'),
+            provider: string('The agent, as the host names it (claude, codex, copilotcli; see the AgentHostSet’s status). Required: a host defers every run of an automation without one.'),
             model: string('A model id the provider offers.'),
             modelConfig: { type: 'object', description: 'Model-specific values.', 'x-kubernetes-preserve-unknown-fields': true },
           },

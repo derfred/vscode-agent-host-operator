@@ -63,8 +63,9 @@ describe('openHost', () => {
     host.close();
   });
 
-  it('creates, updates and removes automations, waiting for the host to take each', async () => {
-    const fake = new FakeHost();
+  for (const [style, echo] of [['publishing the result, as VS Code 1.148 does', false], ['echoing the action, as the spec has it', true]] as const) {
+  it(`creates, updates and removes automations, waiting for the host to take each (${style})`, async () => {
+    const fake = new FakeHost({ echo });
     const host = await open(fake);
     assert.deepEqual(await host.automationCatalog(), []);
     await host.createAutomation('ahp-automation:/k8s-deps', definition('deps'));
@@ -74,6 +75,17 @@ describe('openHost', () => {
     await host.removeAutomation('ahp-automation:/k8s-deps');
     assert.equal(fake.catalog.size, 0);
     assert.deepEqual(await host.automationCatalog(), []);
+    host.close();
+  });
+  }
+
+  it('reads and turns on the host’s automationsEnabled setting', async () => {
+    const fake = new FakeHost();
+    const host = await open(fake);
+    assert.equal(host.automationsEnabled(), false);
+    await host.enableAutomations();
+    assert.equal(fake.automationsEnabled, true);
+    assert.equal(host.automationsEnabled(), true);
     host.close();
   });
 

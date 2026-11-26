@@ -89,7 +89,7 @@ status:
       address: wss://agents-fred-0.example-tailnet.ts.net
       protocolVersion: 1.1.0        # what initialize agreed
       serverInfo: …                 # the host software, when it says
-      agents: [claude, codex, copilot]
+      agents: [claude, codex, copilotcli]
       contentReady: true
       workspaces: [{ name: my-app, phase: Ready }]
       message: null
@@ -124,7 +124,7 @@ spec:
     timeZone: Europe/Berlin         # default UTC
     # misfirePolicy: runOnce        # skip | runOnce
   agent:
-    provider: claude                # claude | copilot | codex
+    provider: claude                # claude | codex | copilotcli
     model: claude-sonnet-5-5
   # config: { … }                   # session config values (e.g. a permission mode), passed as they are
   # placement: One                  # One | EachHost
@@ -136,7 +136,7 @@ The operator places an automation on the hosts that hold its workspace (`Ready` 
 
 The pods come from a StatefulSet you write ([`examples/manifests/host-set.yaml`](../examples/manifests/host-set.yaml)), and the operator only reads it. The host binds to all addresses so the operator can reach it on the pod IP, and reads the same token file the operator reads from the Secret. The pod declares the readiness gate `agenthost.derfred.com/content-ready`.
 
-- **The token is read once, at start** (to confirm in the spike). A rotated Secret takes effect on the next pod restart; rotate by rolling the StatefulSet. The operator reads the Secret every pass and reconnects when it changed.
+- **The token is read once, at start** (confirmed: probe check P9). A rotated Secret takes effect on the next pod restart; rotate by rolling the StatefulSet. The operator reads the Secret every pass and reconnects when it changed.
 - **No Service is required by the operator.** It talks to each pod IP. Per-pod Services exist only for Tailscale.
 - **Bake the server into the image.** The CLI otherwise downloads the server on first start; pinning both makes the AHP version a deploy decision.
 
@@ -173,7 +173,8 @@ Design rules:
 - **One connection per pod, kept open,** with `ping` each pass to notice a dead one.
 - **Pin the protocol range.** The operator offers the versions it was tested against (`1.1.0`, `1.0.0`). AHP moves fast; the end-to-end test should run against each new host image before the range grows.
 - **Stable identity for automations.** The client chooses the automation's resource: `ahp-automation:/k8s-<name>`. The definition's `_meta` also carries `agenthost.derfred.com/automation: <name>` and the hash of the definition the operator applied, so a lost status doesn't create duplicates, and a definition is only updated when the spec changed.
-- **Write-ahead actions, confirmed.** Automation actions are dispatched as notifications; the host echoes each back with the operator's origin, with a `rejectionReason` when it refused it. The operator waits for that echo and reports a refusal in status.
+- **Accepting and refusing actions.** Automation actions are dispatched as notifications. A refusal comes back as the same action with the operator's origin and a `rejectionReason`, which the operator reports in status. An acceptance comes back either as that echo without a reason (the spec's write-ahead model), or, as VS Code 1.148 does it, as the published result with no origin: `automation/set` or `automation/removed` for that resource. The operator waits for either ([testing.md, results](testing.md#results-vs-code-11480-2026-11-26)).
+- **The host's automations switch.** A host runs automations only while its root config value `automationsEnabled` is on, and it is off on a new host. The operator turns it on (`root/configChanged`) for each host where it places an enabled `AgentAutomation`, and for no other host. The host keeps the setting across restarts.
 - **Use the official TypeScript client** rather than hand-written JSON-RPC types.
 - **Why exec for clones:** AHP can read and write files but has no clone call. Exec needs `pods/exec` in the namespace, which the operator's Role has.
 
@@ -212,14 +213,14 @@ Each pod gets its own tailnet hostname with a TLS certificate, through the Tails
 
 ## Decisions made in the implementation
 
-- **Automation fields.** AHP 1.x settled what the design left to the spike: a client-chosen `ahp-automation:` resource, a `message` with origin `automation`, a session template (`provider`, `model`, `workingDirectories`, `config`) and schedule triggers of five cron fields plus an IANA time zone. `AgentAutomation` maps onto exactly that. `permissionMode` became the open `config` map, since the key is host-defined.
+- **Automation fields.** AHP 1.x settled what the design left to the spike: a client-chosen `ahp-automation:` resource, a `message` with origin `automation`, a session template (`provider`, `model`, `workingDirectories`, `config`) and schedule triggers of five cron fields plus an IANA time zone. `AgentAutomation` maps onto exactly that. `permissionMode` became the open `config` map, since the key is host-defined. `agent.provider` is required: VS Code 1.148's host has no default agent and defers every run of an automation without one.
 - **Placement `One`** is the lowest ordinal holding the workspace, and sticky: a host that has it keeps it while it holds the workspace.
 - **No watch on Secrets.** The token is read every pass instead; the host reads its token only at start anyway, so a rotation shows up through the pod restart, which is watched.
 - **A host the operator can't connect to** makes its workspaces `Error`, which doesn't hold the readiness gate, so a wrong token can't stall a rollout.
 
 ## Spike
 
-These still need a real host image; the code is written to the AHP 1.1 spec and tested against a fake host.
+Checks 3 and part of 1 are done: [testing.md](testing.md#results-vs-code-11480-2026-11-26) has the results against VS Code 1.148.0, and stages 1 to 3 there repeat them automatically. The rest need people and devices (testing.md, stage 4).
 
 | # | Check | If it fails |
 | --- | --- | --- |
@@ -234,5 +235,4 @@ These still need a real host image; the code is written to the AHP 1.1 spec and 
 - **Permission policy** (`AgentPolicy`): deny/ask rules. The host merges rules from each connected client and drops them when it disconnects, so the operator would hold a connection to every pod for as long as the policy applies.
 - **A VS Code extension that lists your hosts** from the operator's status.
 - **Several repositories in one workspace.**
-- **An end-to-end test** against a pinned host image, as t3code-operator's against t3.
 - **Shared code with t3code-operator,** extracted into a package once both are stable.

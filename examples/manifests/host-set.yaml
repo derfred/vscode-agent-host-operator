@@ -41,9 +41,12 @@ spec:
       containers:
         - name: agent-host
           image: ghcr.io/derfred/agent-host:latest   # examples/agent-host-image; pin a version
-          command: [code, agent, host, --host, 0.0.0.0, --port, "8081",
-                    --connection-token-file, /etc/agent-host/token/token,
-                    --server-data-dir, /home/node/.agent-host]
+          # After the image's entrypoint, `code agent host --foreground`.
+          # --server-data-dir holds the sessions and the automation
+          # catalogue: on the home volume, so they outlive the pod.
+          args: [--host, 0.0.0.0, --port, "8081",
+                 --connection-token-file, /etc/agent-host/token/token,
+                 --server-data-dir, /home/node/.agent-host]
           env:
             - name: ANTHROPIC_API_KEY          # or CLAUDE_CODE_OAUTH_TOKEN; see docs/design.md, Credentials
               valueFrom: { secretKeyRef: { name: agents-fred-claude, key: api-key } }

@@ -9,8 +9,15 @@
 // - resourceList / resourceDelete: is a checkout there, remove a folder.
 // - the ahp-automations:// channel: the host's durable automation catalogue,
 //   changed with automation/createRequested, automation/updateRequested and
-//   automation/removed. Those are write-ahead actions: the host echoes each
-//   one back with our origin, carrying a rejectionReason when it refused it.
+//   automation/removed. A host refuses one by echoing it back with our origin
+//   and a rejectionReason. It accepts one either by echoing it the same way
+//   without a reason (as the spec has it) or, as VS Code 1.148's host does,
+//   by publishing the result with no origin: automation/set for a create or
+//   update, automation/removed for a remove. Either settles the dispatch.
+// - the root config value automationsEnabled: whether the host runs
+//   automations at all. It is off on a new host (VS Code 1.148), which then
+//   keeps definitions but never schedules them; root/configChanged turns it
+//   on, and the host keeps it across restarts.
 
 import {
   type ActionEnvelope,
@@ -51,7 +58,10 @@ export interface AgentHost {
   readonly serverInfo: string | null;
   // Whether the host has an automation catalogue clients may add to.
   readonly automations: boolean;
-  // The agent providers the host offers (copilot, claude, codex, …), as of now.
+  // Whether the host runs automations (its automationsEnabled setting).
+  automationsEnabled(): boolean;
+  enableAutomations(): Promise<void>;
+  // The agent providers the host offers (claude, codex, copilotcli, …), as of now.
   agents(): ReadonlyArray<string>;
   alive(): boolean;
   ping(): Promise<void>;
@@ -95,7 +105,28 @@ export async function connectHost(url: string, options: OpenOptions): Promise<Ag
   return openHost(transport, options);
 }
 
-type Waiter = { readonly resolve: () => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> };
+type Waiter = {
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+  // An action from the host, with no origin, that shows ours was applied.
+  readonly appliedBy: (action: any) => boolean;
+};
+
+// The action a host publishes once it has applied one of ours.
+function appliedBy(action: any): (published: any) => boolean {
+  switch (action.type) {
+    case 'automation/createRequested':
+    case 'automation/updateRequested':
+      return (p) => p.type === 'automation/set' && p.automation?.resource === action.resource;
+    case 'automation/removed':
+      return (p) => p.type === 'automation/removed' && p.resource === action.resource;
+    case 'root/configChanged':
+      return (p) => p.type === 'root/configChanged' && Object.entries(action.config).every(([k, v]) => p.config?.[k] === v);
+    default:
+      return () => false;
+  }
+}
 
 // Opens a connection over any transport (tests use InMemoryTransport).
 export async function openHost(transport: AhpTransport, options: OpenOptions): Promise<AgentHost> {
@@ -124,10 +155,14 @@ export async function openHost(transport: AhpTransport, options: OpenOptions): P
         // An action the mirror can't apply (from a newer protocol): the next
         // snapshot puts it right.
       }
-      if (envelope.origin?.clientId !== options.clientId) continue;
-      const waiter = waiters.get(envelope.origin.clientSeq);
+      let seq: number | undefined;
+      if (envelope.origin?.clientId === options.clientId) seq = envelope.origin.clientSeq;
+      else if (!envelope.origin && !envelope.rejectionReason) {
+        for (const [s, w] of waiters) if (w.appliedBy(envelope.action)) (seq ??= s);
+      }
+      const waiter = seq === undefined ? undefined : waiters.get(seq);
       if (!waiter) continue;
-      waiters.delete(envelope.origin.clientSeq);
+      waiters.delete(seq!);
       clearTimeout(waiter.timer);
       if (envelope.rejectionReason) waiter.reject(new AhpError(`the host refused ${envelope.action.type}: ${envelope.rejectionReason}`));
       else waiter.resolve();
@@ -169,12 +204,12 @@ export async function openHost(transport: AhpTransport, options: OpenOptions): P
       },
     ));
 
-  // Dispatches an action and waits for the host to echo it back.
-  const dispatch = (action: StateAction) =>
+  // Dispatches an action and waits for the host to accept or refuse it.
+  const dispatch = (action: StateAction, channel = AUTOMATIONS) =>
     new Promise<void>((resolve, reject) => {
       let seq: number;
       try {
-        seq = client.dispatch(AUTOMATIONS, action).clientSeq;
+        seq = client.dispatch(channel, action).clientSeq;
       } catch (error) {
         reject(new AhpError(`${action.type}: ${errorMessage(error)}`, { cause: error }));
         return;
@@ -183,7 +218,7 @@ export async function openHost(transport: AhpTransport, options: OpenOptions): P
         waiters.delete(seq);
         reject(new AhpError(`${action.type}: no answer within ${timeoutMs / 1000}s`));
       }, timeoutMs);
-      waiters.set(seq, { resolve, reject, timer });
+      waiters.set(seq, { resolve, reject, timer, appliedBy: appliedBy(action) });
     });
 
   const serverInfo = init.serverInfo ? `${init.serverInfo.name} ${init.serverInfo.version}`.trim() : null;
@@ -191,6 +226,8 @@ export async function openHost(transport: AhpTransport, options: OpenOptions): P
     protocolVersion: init.protocolVersion,
     serverInfo,
     automations: init.automations?.create !== undefined,
+    automationsEnabled: () => (mirror.root as { config?: { values?: Record<string, unknown> } } | undefined)?.config?.values?.automationsEnabled === true,
+    enableAutomations: () => dispatch({ type: 'root/configChanged', config: { automationsEnabled: true } } as unknown as StateAction, ROOT),
     agents: () => (mirror.root?.agents ?? []).map((a) => a.provider),
     alive: () => client.connectionState.status === 'connected',
     ping: () => client.ping(),

@@ -65,7 +65,7 @@ const workspace = (fields: Partial<WorkspaceResource['spec']> = {}, metadata: Pa
 
 const automation = (fields: Partial<AutomationResource['spec']> = {}, metadata: Partial<AutomationResource['metadata']> = {}, status?: any): AutomationResource => ({
   metadata: { name: 'deps', finalizers: [FINALIZER], generation: 1, ...metadata },
-  spec: { workspace: 'my-app', prompt: 'Check for outdated dependencies.', trigger: { schedule: '0 3 * * 1-5' }, ...fields },
+  spec: { workspace: 'my-app', prompt: 'Check for outdated dependencies.', agent: { provider: 'claude' }, trigger: { schedule: '0 3 * * 1-5' }, ...fields },
   ...(status ? { status } : {}),
 });
 
@@ -211,6 +211,10 @@ describe('automationDefinition', () => {
   it('without a schedule is manual-only', () => {
     assert.deepEqual((automationDefinition(automation({ trigger: undefined }), workspace()) as any).triggers, []);
   });
+  it('refuses one without an agent provider, which a host would never run', () => {
+    assert.throws(() => automationDefinition(automation({ agent: undefined as never }), workspace()), /agent.provider is required/);
+  });
+
   it('refuses a schedule that is not five cron fields', () => {
     assert.throws(() => automationDefinition(automation({ trigger: { schedule: '@daily' } }), workspace()), /five cron fields/);
   });
@@ -243,6 +247,35 @@ describe('reconcileAutomations', () => {
     const { fakes, world } = await setup(['p-0', 'p-1']);
     await reconcileAutomations(deps(kube), [automation({ placement: 'EachHost' })], [workspace()], new Map([['my-app', [ready('p-0'), ready('p-1')]]]), world);
     assert.equal(fakes.get('p-0')!.catalog.size + fakes.get('p-1')!.catalog.size, 2);
+  });
+
+  it('turns on automations on a host it puts an enabled automation on, and only then', async () => {
+    const { kube } = fakeKube();
+    const { fakes, world } = await setup(['p-0', 'p-1']);
+    const placed = new Map([['my-app', [ready('p-0'), ready('p-1')]]]);
+    await reconcileAutomations(deps(kube), [automation({ enabled: false, placement: 'EachHost' })], [workspace()], placed, world);
+    assert.deepEqual([fakes.get('p-0')!.automationsEnabled, fakes.get('p-1')!.automationsEnabled], [false, false]);
+    await reconcileAutomations(deps(kube), [automation()], [workspace()], placed, world);
+    assert.deepEqual([fakes.get('p-0')!.automationsEnabled, fakes.get('p-1')!.automationsEnabled], [true, false]);
+    const changes = () => fakes.get('p-0')!.received.filter((r) => r.params?.action?.type === 'root/configChanged').length;
+    await reconcileAutomations(deps(kube), [automation()], [workspace()], placed, world);
+    assert.equal(changes(), 1, 'once');
+  });
+
+  it('says why it cannot remove an automation while a run is in progress', async () => {
+    const { kube, lastStatus } = fakeKube();
+    const { fakes, world } = await setup(['p-0']);
+    const placed = new Map([['my-app', [ready('p-0')]]]);
+    await reconcileAutomations(deps(kube), [automation()], [workspace()], placed, world);
+    const entry = fakes.get('p-0')!.catalog.get('ahp-automation:/k8s-deps')!;
+    // As the host has it mid-run: no remove operation.
+    fakes.get('p-0')!.catalog.set(entry.resource, { ...entry, operations: ['update'] as never, runs: [{ lifecycle: { status: 'running' } }] as never });
+    const status = { hosts: [{ pod: 'p-0', resource: entry.resource, nextRunAt: null, lastRun: null }] };
+    const host = world.agentHost('p-0')!;
+    // The client sees the catalogue through its mirror: resubscribe it.
+    (host as any).automationCatalog = async () => [fakes.get('p-0')!.catalog.get(entry.resource)!];
+    await reconcileAutomations(deps(kube), [automation({}, { deletionTimestamp: NOW.toISOString() }, status)], [workspace()], placed, world);
+    assert.match(lastStatus('deps').message, /a run is in progress/);
   });
 
   it('updates it when the spec changes, and leaves it alone when not', async () => {

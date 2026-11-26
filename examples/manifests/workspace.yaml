@@ -25,7 +25,7 @@ spec:
     schedule: "0 3 * * 1-5"         # five cron fields, as AHP defines them
     timeZone: Europe/Berlin         # default UTC
   agent:
-    provider: claude                # claude | copilot | codex: see the AgentHostSet's status
+    provider: claude                # claude | codex | copilotcli: see the AgentHostSet's status
     model: claude-sonnet-5-5
   # config: { … }                   # session config values, such as a permission mode
   # placement: One                  # One | EachHost

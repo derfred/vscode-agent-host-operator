@@ -1,7 +1,11 @@
 // A fake agent host: the server half of an InMemoryTransport pair, speaking
 // enough AHP for the operator: initialize, ping, resourceList,
 // resourceDelete, subscribe to ahp-automations://, and the automation
-// actions, echoed with their origin as a host does.
+// actions. By default it answers those as VS Code 1.148's host does (seen
+// with scripts/probe.ts): a refusal is echoed with the client's origin and a
+// rejectionReason; an accepted action is not echoed, the host publishes its
+// result instead (automation/set, automation/removed) with no origin.
+// `echo: true` answers as the AHP spec has it: every action echoed.
 
 import type { AutomationDefinition, AutomationEntry } from '@microsoft/agent-host-protocol';
 import { InMemoryTransport, type AhpTransport } from '@microsoft/agent-host-protocol/client';
@@ -14,6 +18,10 @@ export interface FakeHostOptions {
   readonly files?: Record<string, string[]>;
   // Refuses dispatched actions with this reason.
   readonly reject?: string;
+  // Echoes accepted actions with their origin too (the spec's write-ahead).
+  readonly echo?: boolean;
+  // The root config value automationsEnabled (off on a new host).
+  readonly automationsEnabled?: boolean;
 }
 
 export class FakeHost {
@@ -23,11 +31,13 @@ export class FakeHost {
   readonly catalog = new Map<string, AutomationEntry>();
   readonly received: Array<{ method: string; params: any }> = [];
   options: FakeHostOptions;
+  automationsEnabled: boolean;
   #serverSeq = 0;
 
   constructor(options: FakeHostOptions = {}) {
     this.options = options;
     this.files = new Map(Object.entries(options.files ?? {}));
+    this.automationsEnabled = options.automationsEnabled ?? false;
     [this.client, this.#server] = InMemoryTransport.pair();
     void this.#serve();
   }
@@ -49,7 +59,7 @@ export class FakeHost {
       resource,
       definition,
       runs: [],
-      operations: ['update', 'remove', 'run'] as never,
+      operations: ['update', 'remove'] as never,
       createdAt: '2026-11-26T00:00:00.000Z',
       modifiedAt: '2026-11-26T00:00:00.000Z',
       nextRunAt: '2026-11-27T03:00:00.000Z',
@@ -88,7 +98,10 @@ export class FakeHost {
             {
               resource: 'ahp-root://',
               fromSeq: this.#serverSeq,
-              state: { agents: (this.options.agents ?? ['claude', 'copilot']).map((provider) => ({ provider, displayName: provider, description: '', models: [] })) },
+              state: {
+                agents: (this.options.agents ?? ['claude', 'codex', 'copilotcli']).map((provider) => ({ provider, displayName: provider, description: '', models: [] })),
+                config: { schema: { type: 'object', properties: {} }, values: { automationsEnabled: this.automationsEnabled } },
+              },
             },
           ],
           ...(this.options.automations === false ? {} : { automations: { create: {}, schedules: {} } }),
@@ -126,7 +139,13 @@ export class FakeHost {
       this.#action(channel, action, origin, this.options.reject);
       return;
     }
-    this.#action(channel, action, origin);
+    // Root config changes are echoed with their origin, as 1.148 does.
+    if (action.type === 'root/configChanged') {
+      if (action.config.automationsEnabled !== undefined) this.automationsEnabled = action.config.automationsEnabled;
+      this.#action(channel, action, origin);
+      return;
+    }
+    if (this.options.echo) this.#action(channel, action, origin);
     if (action.type === 'automation/createRequested') {
       const entry = this.entry(action.resource, action.definition);
       this.catalog.set(action.resource, entry);
@@ -137,7 +156,7 @@ export class FakeHost {
       this.catalog.set(action.resource, entry);
       this.#action(channel, { type: 'automation/set', automation: entry });
     } else if (action.type === 'automation/removed') {
-      this.catalog.delete(action.resource);
+      if (this.catalog.delete(action.resource)) this.#action(channel, { type: 'automation/removed', resource: action.resource });
     }
   }
 

@@ -219,8 +219,10 @@ spec:
                     type: "object"
                     x-kubernetes-preserve-unknown-fields: true
                   provider:
-                    description: "The agent, as the host names it (claude, copilot, codex; see the AgentHostSet’s status). Default: the host’s default."
+                    description: "The agent, as the host names it (claude, codex, copilotcli; see the AgentHostSet’s status). Required: a host defers every run of an automation without one."
                     type: "string"
+                required:
+                - "provider"
                 type: "object"
               config:
                 description: "Session configuration values, such as its permission mode, passed to the host as they are."
@@ -266,6 +268,7 @@ spec:
             required:
             - "workspace"
             - "prompt"
+            - "agent"
             type: "object"
           status:
             type: "object"

@@ -122,10 +122,11 @@ export interface AutomationSpec {
     readonly timeZone?: string;
     readonly misfirePolicy?: 'skip' | 'runOnce';
   };
-  readonly agent?: {
-    // claude | copilot | codex, as the host names its agents. Default: the
-    // host's default.
-    readonly provider?: string;
+  readonly agent: {
+    // claude | codex | copilotcli, as the host names its agents. Required:
+    // VS Code 1.148's host has no default, and defers every run of an
+    // automation without one (docs/testing.md, results).
+    readonly provider: string;
     readonly model?: string;
     readonly modelConfig?: Readonly<Record<string, string | number | boolean>>;
   };
@@ -494,6 +495,7 @@ const CRON_FIELD = /^[A-Za-z0-9*,/-]+$/;
 // everything but the hash in its _meta.
 export function automationDefinition(cr: AutomationResource, workspace: WorkspaceResource): AutomationDefinition {
   const { spec } = cr;
+  if (!spec.agent?.provider) throw new Error('agent.provider is required: a host runs no automation without one');
   const schedule = spec.trigger?.schedule?.trim();
   if (schedule !== undefined && schedule !== '') {
     const fields = schedule.split(/\s+/);
@@ -508,7 +510,7 @@ export function automationDefinition(cr: AutomationResource, workspace: Workspac
     title: spec.title ?? cr.metadata.name,
     message: { text: spec.prompt, origin: { kind: 'automation' } },
     session: {
-      ...(spec.agent?.provider ? { provider: spec.agent.provider } : {}),
+      provider: spec.agent.provider,
       ...(model ? { model } : {}),
       workingDirectories: [fileUri(workspacePath(workspace))],
       ...(spec.config ? { config: { ...spec.config } } : {}),
@@ -645,6 +647,15 @@ export async function reconcileAutomations(
       continue;
     }
     seen.add(pod);
+    // A new host keeps automations but runs none until its automationsEnabled
+    // setting is on: an enabled AgentAutomation asks for exactly that.
+    if ([...wanted.values()].some((d) => d.enabled) && !agentHost.automationsEnabled()) {
+      try {
+        await agentHost.enableAutomations();
+      } catch (error) {
+        for (const name of wanted.keys()) fail(name, `${pod}: turning on automations: ${errorMessage(error)}`);
+      }
+    }
     const ours = new Map(catalog.flatMap((e) => (ownerOf(e) === null ? [] : [[ownerOf(e)!, e] as const])));
 
     for (const [name, definition] of wanted) {
@@ -668,7 +679,11 @@ export async function reconcileAutomations(
     for (const [name, entry] of ours) {
       if (wanted.has(name)) continue;
       try {
-        if (!entry.operations.includes('remove' as never)) throw new Error('the host does not allow removing it');
+        if (!entry.operations.includes('remove' as never)) {
+          // The host refuses to remove an automation while it runs.
+          const active = entry.runs?.some((r) => ['pending', 'running'].includes((r.lifecycle as { status: string }).status));
+          throw new Error(active ? 'a run is in progress; it goes once the run ends' : 'the host does not allow removing it');
+        }
         await agentHost.removeAutomation(entry.resource);
       } catch (error) {
         record(name, pod, entry);
