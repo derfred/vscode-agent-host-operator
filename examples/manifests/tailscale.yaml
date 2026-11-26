@@ -1,0 +1,27 @@
+# How people reach a host: its own tailnet hostname with a TLS certificate,
+# through the Tailscale Kubernetes operator's ingress class. One Service and
+# one Ingress per pod; ordinals are stable, so these are static. Clients add
+# wss://agents-fred-0.<tailnet>.ts.net/?tkn=<token> to the VS Code setting
+# chat.remoteAgentHosts. The operator itself needs none of this: it talks to
+# each pod on its IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agents-fred-0
+  namespace: agents
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: agents-fred-0 }
+  ports: [{ name: ahp, port: 8081 }]
+  publishNotReadyAddresses: true   # reachable while the operator holds readiness
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agents-fred-0
+  namespace: agents
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service: { name: agents-fred-0, port: { name: ahp } }
+  tls:
+    - hosts: [agents-fred-0]       # becomes agents-fred-0.<tailnet>.ts.net

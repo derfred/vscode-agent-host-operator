@@ -1,0 +1,31 @@
+# A repository checked out on every host of the sets it selects, and a prompt
+# the host runs there on a schedule.
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentWorkspace
+metadata:
+  name: my-app
+  namespace: agents
+spec:
+  repository: https://github.com/example/my-app.git
+  # ref: main                       # branch to check out; default: the remote's default
+  # path: /workspace/my-app         # default /workspace/<name>
+  hostSetSelector:                  # a LabelSelector; {} = every set
+    matchLabels: { owner: fred }
+  # deletionPolicy: Retain          # Retain | Delete (removes the folder)
+---
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentAutomation
+metadata:
+  name: dependencies
+  namespace: agents
+spec:
+  workspace: my-app                 # the working directory, and which hosts may hold it
+  prompt: Check for outdated dependencies and open a PR for any that are behind.
+  trigger:
+    schedule: "0 3 * * 1-5"         # five cron fields, as AHP defines them
+    timeZone: Europe/Berlin         # default UTC
+  agent:
+    provider: claude                # claude | codex | copilotcli: see the AgentHostSet's status
+    model: claude-sonnet-5-5
+  # config: { … }                   # session config values, such as a permission mode
+  # placement: One                  # One | EachHost

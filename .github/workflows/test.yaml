@@ -1,0 +1,59 @@
+name: test
+
+# On every push and pull request:
+#
+#   unit  `npm test` and `npm run typecheck`, and `npm run render -- --check`:
+#         deploy/install.yaml is exactly what deploy/jsonnet renders, and
+#         deploy/jsonnet/version.json agrees with package.json.
+#   e2e   `npm run e2e`: the operator's image, built from this commit,
+#         against a fake Kubernetes API server and two real agent hosts in
+#         Docker (examples/agent-host-image, the latest VS Code unless run by
+#         hand with another version). Builds both images on the way.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      vscode-version:
+        description: "VS Code for the host image: latest, or a commit (docs/testing.md: run this before raising PROTOCOL_VERSIONS)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      # Go is on the runner; go-jsonnet renders deploy/*.yaml from deploy/jsonnet.
+      - name: Rendered manifests are up to date
+        run: |
+          go install github.com/google/go-jsonnet/cmd/jsonnet@v0.21.0
+          JSONNET="$(go env GOPATH)/bin/jsonnet" npm run render -- --check
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: The host image
+        run: docker build -t agent-host:e2e --build-arg VSCODE_VERSION="${VSCODE_VERSION:-latest}" examples/agent-host-image
+        env:
+          VSCODE_VERSION: ${{ inputs.vscode-version }}
+      - name: End-to-end
+        run: npm run e2e -- --host-image agent-host:e2e

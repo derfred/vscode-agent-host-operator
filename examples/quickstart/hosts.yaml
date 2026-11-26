@@ -1,0 +1,68 @@
+# The agent hosts: a StatefulSet whose pods each run `code agent host`, with
+# their own home and workspace volumes, and the AgentHostSet that tells the
+# operator about them. The operator never creates these; they're yours to
+# shape. quickstart.sh fills in ${IMAGE}, the image it built from
+# examples/agent-host-image and loaded into kind, and creates the token
+# Secret, agents-quickstart-token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agents-quickstart
+  namespace: agents
+spec:
+  clusterIP: None                   # the StatefulSet's headless Service
+  publishNotReadyAddresses: true    # reach a pod while the operator holds its readiness
+  selector: { app: agents-quickstart }
+  ports: [{ name: ahp, port: 8081 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agents-quickstart
+  namespace: agents
+spec:
+  serviceName: agents-quickstart
+  replicas: 1
+  selector:
+    matchLabels: { app: agents-quickstart }
+  template:
+    metadata:
+      labels: { app: agents-quickstart }
+    spec:
+      readinessGates:               # Ready once the operator has put the workspaces in place
+        - conditionType: agenthost.derfred.com/content-ready
+      securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true }
+      containers:
+        - name: agent-host
+          image: ${IMAGE}
+          imagePullPolicy: Never    # loaded into kind
+          args: [--host, 0.0.0.0, --port, "8081",
+                 --connection-token-file, /etc/agent-host/token/token,
+                 --server-data-dir, /home/node/.agent-host]
+          ports: [{ name: ahp, containerPort: 8081 }]
+          readinessProbe: { tcpSocket: { port: 8081 }, periodSeconds: 3 }
+          volumeMounts:
+            - { name: token, mountPath: /etc/agent-host/token, readOnly: true }
+            - { name: home, mountPath: /home/node }
+            - { name: workspace, mountPath: /workspace }
+      volumes:
+        - name: token
+          secret: { secretName: agents-quickstart-token }
+  volumeClaimTemplates:
+    - metadata: { name: home }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 1Gi } } }
+    - metadata: { name: workspace }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 2Gi } } }
+---
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentHostSet
+metadata:
+  name: quickstart
+  namespace: agents
+  labels: { owner: quickstart }
+spec:
+  statefulSet: agents-quickstart
+  container: agent-host
+  port: 8081
+  connectionToken: { secretName: agents-quickstart-token }
+  address: "ws://localhost:8081"    # what quickstart.sh's port-forward gives you
