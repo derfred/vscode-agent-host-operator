@@ -1,0 +1,63 @@
+# One person's agent hosts: the connection token, the StatefulSet whose pods
+# are the hosts, and the AgentHostSet that tells the operator about them.
+# Reaching them from your devices: tailscale.yaml.
+#
+#   kubectl -n agents create secret generic agents-fred-token \
+#     --from-literal=token="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9_-')"
+#   kubectl -n agents create secret generic agents-fred-claude --from-literal=api-key=sk-ant-…
+#   kubectl apply -f examples/manifests/host-set.yaml
+apiVersion: agenthost.derfred.com/v1alpha1
+kind: AgentHostSet
+metadata:
+  name: fred
+  namespace: agents
+  labels: { owner: fred }
+spec:
+  statefulSet: agents-fred          # its pods are the hosts
+  container: agent-host             # for exec (clones); default: the first container
+  port: 8081                        # the host's WebSocket port
+  connectionToken:                  # the same Secret the pods mount as --connection-token-file
+    secretName: agents-fred-token
+    key: token
+  address: "wss://{pod}.example-tailnet.ts.net"   # reported in status, for clients
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agents-fred
+  namespace: agents
+spec:
+  serviceName: agents-fred
+  replicas: 1
+  selector: { matchLabels: { app: agents-fred } }
+  template:
+    metadata:
+      labels: { app: agents-fred }
+    spec:
+      # Ready only once the operator has put every workspace in place.
+      readinessGates:
+        - conditionType: agenthost.derfred.com/content-ready
+      securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true }
+      containers:
+        - name: agent-host
+          image: ghcr.io/derfred/agent-host:latest   # examples/agent-host-image; pin a version
+          command: [code, agent, host, --host, 0.0.0.0, --port, "8081",
+                    --connection-token-file, /etc/agent-host/token/token,
+                    --server-data-dir, /home/node/.agent-host]
+          env:
+            - name: ANTHROPIC_API_KEY          # or CLAUDE_CODE_OAUTH_TOKEN; see docs/design.md, Credentials
+              valueFrom: { secretKeyRef: { name: agents-fred-claude, key: api-key } }
+          ports: [{ name: ahp, containerPort: 8081 }]
+          readinessProbe: { tcpSocket: { port: 8081 } }
+          volumeMounts:
+            - { name: token, mountPath: /etc/agent-host/token, readOnly: true }
+            - { name: home, mountPath: /home/node }          # host data: sessions, automations, CLI
+            - { name: workspace, mountPath: /workspace }     # the checkouts
+      volumes:
+        - name: token
+          secret: { secretName: agents-fred-token }
+  volumeClaimTemplates:
+    - metadata: { name: home }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 5Gi } } }
+    - metadata: { name: workspace }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 20Gi } } }

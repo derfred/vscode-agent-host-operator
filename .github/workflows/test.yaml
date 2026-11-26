@@ -1,0 +1,42 @@
+name: test
+
+# On every push and pull request:
+#
+#   unit  `npm test` and `npm run typecheck`, and `npm run render -- --check`:
+#         deploy/install.yaml is exactly what deploy/jsonnet renders, and
+#         deploy/jsonnet/version.json agrees with package.json.
+#   image the operator's image builds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      # Go is on the runner; go-jsonnet renders deploy/*.yaml from deploy/jsonnet.
+      - name: Rendered manifests are up to date
+        run: |
+          go install github.com/google/go-jsonnet/cmd/jsonnet@v0.21.0
+          JSONNET="$(go env GOPATH)/bin/jsonnet" npm run render -- --check
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the operator image
+        run: docker build -t vscode-agent-host-operator:ci .
